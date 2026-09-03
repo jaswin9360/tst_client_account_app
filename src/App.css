@@ -1393,3 +1393,56 @@ input:disabled {
     width: 100%;
   }
 }
+/* =========================================================
+   FAST SESSION LOADER
+   ========================================================= */
+
+.session-loading {
+  min-height: 120px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  gap: 10px;
+
+  color: #64748b;
+
+  font-size: 14px;
+}
+
+.session-spinner {
+  width: 20px;
+  height: 20px;
+
+  border: 2px solid #e2e8f0;
+  border-top-color: #2563eb;
+
+  border-radius: 50%;
+
+  animation: sessionSpin 0.65s linear infinite;
+}
+
+@keyframes sessionSpin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+
+/* =========================================================
+   PREVENT DOUBLE SUBMISSION
+   ========================================================= */
+
+.submit-button:disabled,
+.user-account-card:disabled,
+.other-account-btn:disabled,
+.back-button:disabled {
+  opacity: 0.65;
+
+  cursor: not-allowed;
+}
