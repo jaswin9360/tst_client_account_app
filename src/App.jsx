@@ -1,8 +1,20 @@
-import { useEffect, useState, useMemo } from "react";
-import "./App.css";
+import {
+  useCallback,
+  useEffect,
+  useState
+} from "react";
 
-const AUTH_API =
-  "https://tst-server-90.onrender.com/api";
+import {
+  Routes,
+  Route,
+  Navigate,
+  NavLink
+} from "react-router-dom";
+
+import { api } from "./api";
+import developer_api from "./developer_api";
+import Mail from "./Mail";
+import "./App.css";
 
 function isUmail(email) {
   return /^[a-zA-Z0-9._%+-]+@umail\.com$/.test(
@@ -10,1225 +22,41 @@ function isUmail(email) {
   );
 }
 
-function App() {
-  const [mode, setMode] = useState("chooser");
-
-  const [existingUser, setExistingUser] = useState(null);
-
-  const [checkingSession, setCheckingSession] =
-    useState(true);
-
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
-
-  const [requiresTwoFactor, setRequiresTwoFactor] =
-    useState(false);
-
-  const [twoFactorPin, setTwoFactorPin] =
-    useState("");
-
-  const [showPin, setShowPin] = useState(false);
-  const [showPassword, setShowPassword] =
-    useState(false);
-
-  const [loading, setLoading] = useState(false);
-
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
-
-  // ============================================================
-  // URL PARAMETERS
-  // ============================================================
-
-  const {
-    apiKey,
-    origin,
-    clientName
-  } = useMemo(() => {
-    const params = new URLSearchParams(
-      window.location.search
-    );
-
-    return {
-      apiKey: params.get("apiKey"),
-      origin: params.get("origin"),
-      clientName:
-        params.get("clientName") ||
-        "your application"
-    };
-  }, []);
-
-  // ============================================================
-  // CHECK SESSION
-  // ============================================================
-
-  useEffect(() => {
-    const controller = new AbortController();
-
-    checkExistingSession(controller.signal);
-
-    return () => {
-      controller.abort();
-    };
-  }, []);
-
-  async function checkExistingSession(signal) {
-    const token =
-      localStorage.getItem("accessToken");
-
-    // No token = no need to call backend
-    if (!token) {
-      setExistingUser(null);
-      setMode("login");
-      setCheckingSession(false);
-      return;
-    }
-
-    let parsedUser = null;
-
-    const savedUser =
-      localStorage.getItem("user");
-
-    if (savedUser) {
-      try {
-        parsedUser = JSON.parse(savedUser);
-      } catch {
-        parsedUser = null;
-      }
-    }
-
-    try {
-      const response = await fetch(
-        `${AUTH_API}/auth/me`,
-        {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${token}`
-          },
-          signal
-        }
-      );
-
-      if (!response.ok) {
-        localStorage.removeItem(
-          "accessToken"
-        );
-
-        localStorage.removeItem("user");
-
-        setExistingUser(null);
-        setMode("login");
-
-        return;
-      }
-
-      const data = await response.json();
-
-      const user =
-        data.user ||
-        data.data?.user ||
-        parsedUser;
-
-      if (!user?.email) {
-        localStorage.removeItem(
-          "accessToken"
-        );
-
-        localStorage.removeItem("user");
-
-        setExistingUser(null);
-        setMode("login");
-
-        return;
-      }
-
-      localStorage.setItem(
-        "user",
-        JSON.stringify(user)
-      );
-
-      setExistingUser(user);
-      setMode("chooser");
-
-    } catch (err) {
-      if (err.name === "AbortError") {
-        return;
-      }
-
-      console.error(
-        "Session check error:",
-        err
-      );
-
-      setExistingUser(null);
-      setMode("login");
-
-    } finally {
-      if (!signal.aborted) {
-        setCheckingSession(false);
-      }
-    }
-  }
-
-  // ============================================================
-  // SEND SUCCESS TO OPENER
-  // ============================================================
-
-  function sendSuccess(user, accessToken) {
-    if (!window.opener) {
-      setError(
-        "Unable to return authentication result."
-      );
-
-      setLoading(false);
-
-      return;
-    }
-
-    window.opener.postMessage(
-      {
-        type: "YOURAUTH_SUCCESS",
-        user,
-        accessToken
-      },
-      origin || "*"
-    );
-
-    window.close();
-  }
-
-  // ============================================================
-  // CONTINUE WITH EXISTING ACCOUNT
-  // ============================================================
-
-  async function continueWithExistingAccount() {
-    if (loading) return;
-
-    const token =
-      localStorage.getItem("accessToken");
-
-    if (!token || !existingUser) {
-      setMode("login");
-      return;
-    }
-
-    if (!existingUser.email) {
-      setError(
-        "Account email is missing. Please sign in again."
-      );
-
-      return;
-    }
-
-    if (
-      requiresTwoFactor &&
-      !/^\d{4}$/.test(twoFactorPin)
-    ) {
-      setError(
-        "Enter your 4-digit 2FA PIN."
-      );
-
-      return;
-    }
-
-    setLoading(true);
-    setError("");
-    setMessage("");
-
-    try {
-      const body = {
-        email:
-          existingUser.email
-            .trim()
-            .toLowerCase(),
-
-        continueWithSession: true
-      };
-
-      if (requiresTwoFactor) {
-        body.twoFactorPin =
-          twoFactorPin;
-      }
-
-      const response = await fetch(
-        `${AUTH_API}/auth/signin`,
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json",
-
-            Authorization:
-              `Bearer ${token}`,
-
-            "x-api-key":
-              apiKey || ""
-          },
-
-          body: JSON.stringify(body)
-        }
-      );
-
-      const data =
-        await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.message ||
-          "Authentication failed"
-        );
-      }
-
-      if (
-        data.requiresTwoFactor === true
-      ) {
-        setRequiresTwoFactor(true);
-        setTwoFactorPin("");
-        setShowPin(false);
-
-        return;
-      }
-
-      const newToken =
-        data.accessToken ||
-        data.token ||
-        token;
-
-      if (
-        data.accessToken ||
-        data.token
-      ) {
-        localStorage.setItem(
-          "accessToken",
-          newToken
-        );
-      }
-
-      const finalUser =
-        data.user ||
-        existingUser;
-
-      if (data.user) {
-        localStorage.setItem(
-          "user",
-          JSON.stringify(data.user)
-        );
-      }
-
-      sendSuccess(
-        finalUser,
-        newToken
-      );
-
-    } catch (err) {
-      console.error(
-        "Continue authentication error:",
-        err
-      );
-
-      setError(
-        err.message ||
-        "Authentication failed"
-      );
-
-      setLoading(false);
-    }
-  }
-
-  // ============================================================
-  // LOGIN / SIGNUP
-  // ============================================================
-
-  async function submit(e) {
-    e.preventDefault();
-
-    if (loading) return;
-
-    setError("");
-    setMessage("");
-
-    // ==========================================================
-    // VALIDATION
-    // ==========================================================
-
-    if (!isUmail(email)) {
-      setError(
-        "Only @umail.com email addresses are allowed."
-      );
-
-      return;
-    }
-
-    if (
-      mode === "signup" &&
-      !name.trim()
-    ) {
-      setError(
-        "Name is required."
-      );
-
-      return;
-    }
-
-    if (
-      !requiresTwoFactor &&
-      password.length < 6
-    ) {
-      setError(
-        "Password must be at least 6 characters."
-      );
-
-      return;
-    }
-
-    if (
-      requiresTwoFactor &&
-      !/^\d{4}$/.test(twoFactorPin)
-    ) {
-      setError(
-        "Enter your 4-digit 2FA PIN."
-      );
-
-      return;
-    }
-
-    setLoading(true);
-
-    try {
-      const endpoint =
-        mode === "signup"
-          ? "/auth/signup"
-          : "/auth/signin";
-
-      let body;
-
-      if (mode === "signup") {
-        body = {
-          name: name.trim(),
-
-          email:
-            email.trim().toLowerCase(),
-
-          password
-        };
-      } else {
-        body = {
-          email:
-            email.trim().toLowerCase(),
-
-          password
-        };
-
-        if (requiresTwoFactor) {
-          body.twoFactorPin =
-            twoFactorPin;
-        }
-      }
-
-      const response = await fetch(
-        `${AUTH_API}${endpoint}`,
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json",
-
-            "x-api-key":
-              apiKey || ""
-          },
-
-          body: JSON.stringify(body)
-        }
-      );
-
-      const data =
-        await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.message ||
-          "Authentication failed"
-        );
-      }
-
-      // ========================================================
-      // 2FA REQUIRED
-      // ========================================================
-
-      if (
-        data.requiresTwoFactor === true
-      ) {
-        setRequiresTwoFactor(true);
-
-        setTwoFactorPin("");
-
-        setShowPin(false);
-
-        setLoading(false);
-
-        return;
-      }
-
-      // ========================================================
-      // TOKEN
-      // ========================================================
-
-      const accessToken =
-        data.accessToken ||
-        data.token;
-
-      if (!accessToken) {
-        throw new Error(
-          "Authentication token was not returned."
-        );
-      }
-
-      localStorage.setItem(
-        "accessToken",
-        accessToken
-      );
-
-      if (data.user) {
-        localStorage.setItem(
-          "user",
-          JSON.stringify(
-            data.user
-          )
-        );
-      }
-
-      sendSuccess(
-        data.user,
-        accessToken
-      );
-
-    } catch (err) {
-      console.error(
-        "Authentication error:",
-        err
-      );
-
-      setError(
-        err.message ||
-        "Authentication failed"
-      );
-
-      setLoading(false);
-    }
-  }
-
-  // ============================================================
-  // ANOTHER ACCOUNT
-  // ============================================================
-
-  function useAnotherAccount() {
-    if (loading) return;
-
-    setExistingUser(null);
-
-    setMode("login");
-
-    setRequiresTwoFactor(false);
-
-    setTwoFactorPin("");
-
-    setEmail("");
-
-    setPassword("");
-
-    setName("");
-
-    setError("");
-
-    setMessage("");
-  }
-
-  // ============================================================
-  // SESSION LOADING
-  // ============================================================
-
-  if (checkingSession) {
-    return (
-      <div className="auth-page">
-
-        <div className="auth-container">
-
-          <div className="auth-card">
-
-            <div className="session-loading">
-
-              <div className="session-spinner"></div>
-
-              <span>
-                Checking your UserAuth account...
-              </span>
-
-            </div>
-
-          </div>
-
-        </div>
-
-      </div>
-    );
-  }
-
-  // ============================================================
-  // EXISTING ACCOUNT + 2FA
-  // ============================================================
-
-  if (
-    mode === "chooser" &&
-    existingUser &&
-    requiresTwoFactor
-  ) {
-    return (
-      <div className="auth-page">
-
-        <div className="auth-container">
-
-          <div className="auth-brand">
-
-            <div className="brand-icon">
-              U
-            </div>
-
-            <h1>
-              UserAuth
-            </h1>
-
-            <p>
-              Secure authentication
-            </p>
-
-          </div>
-
-          <div className="auth-card">
-
-            <h2>
-              Continue with UserAuth
-            </h2>
-
-            <p className="description">
-              Enter your 4-digit security PIN to continue.
-            </p>
-
-            {error && (
-              <div className="error">
-                {error}
-              </div>
-            )}
-
-            <div className="field">
-
-              <label>
-                4-digit 2FA PIN
-              </label>
-
-              <div className="password-wrapper">
-
-                <input
-                  type={
-                    showPin
-                      ? "text"
-                      : "password"
-                  }
-
-                  inputMode="numeric"
-
-                  maxLength={4}
-
-                  placeholder="0000"
-
-                  value={twoFactorPin}
-
-                  onChange={(e) =>
-                    setTwoFactorPin(
-                      e.target.value
-                        .replace(/\D/g, "")
-                        .slice(0, 4)
-                    )
-                  }
-
-                  autoFocus
-
-                  required
-                />
-
-                <button
-                  type="button"
-                  className="show-password"
-
-                  onClick={() =>
-                    setShowPin(
-                      !showPin
-                    )
-                  }
-                >
-                  {showPin
-                    ? "Hide"
-                    : "Show"}
-                </button>
-
-              </div>
-
-              <small className="email-hint">
-                Two-factor authentication is enabled
-                for {existingUser.email}
-              </small>
-
-            </div>
-
-            <button
-              type="button"
-              className="submit-button"
-
-              onClick={
-                continueWithExistingAccount
-              }
-
-              disabled={
-                loading ||
-                twoFactorPin.length !== 4
-              }
-            >
-              {loading
-                ? "Verifying..."
-                : "Continue"}
-            </button>
-
-            <button
-              type="button"
-              className="back-button"
-
-              onClick={() => {
-
-                if (loading) return;
-
-                setRequiresTwoFactor(false);
-
-                setTwoFactorPin("");
-
-                setShowPin(false);
-
-                setError("");
-
-              }}
-
-              disabled={loading}
-            >
-              ← Back
-            </button>
-
-          </div>
-
-        </div>
-
-      </div>
-    );
-  }
-
-  // ============================================================
-  // EXISTING ACCOUNT CHOOSER
-  // ============================================================
-
-  if (
-    mode === "chooser" &&
-    existingUser
-  ) {
-    return (
-      <div className="auth-page">
-
-        <div className="account-selector">
-
-          <div className="selector-brand">
-
-            <div className="selector-logo">
-              U
-            </div>
-
-            <div>
-
-              <strong>
-                UserAuth
-              </strong>
-
-              <span>
-                Secure sign-in
-              </span>
-
-            </div>
-
-          </div>
-
-          <div className="selector-header">
-
-            <h1>
-              Continue with UserAuth
-            </h1>
-
-            <p>
-              Select an account to continue
-            </p>
-
-          </div>
-
-          <div className="client-box">
-
-            <div className="client-icon">
-              U
-            </div>
-
-            <div className="client-details">
-
-              <span>
-                Continue to
-              </span>
-
-              <strong>
-                {clientName}
-              </strong>
-
-            </div>
-
-          </div>
-
-          {error && (
-            <div className="error">
-              {error}
-            </div>
-          )}
-
-          <button
-            type="button"
-            className="user-account-card"
-
-            onClick={
-              continueWithExistingAccount
-            }
-
-            disabled={loading}
-          >
-
-            <div className="user-avatar">
-
-              {
-                existingUser.name
-                  ?.charAt(0)
-                  ?.toUpperCase() ||
-
-                existingUser.email
-                  ?.charAt(0)
-                  ?.toUpperCase() ||
-
-                "U"
-              }
-
-            </div>
-
-            <div className="user-account-info">
-
-              <strong>
-                {
-                  existingUser.name ||
-                  "UserAuth User"
-                }
-              </strong>
-
-              <span>
-                {existingUser.email}
-              </span>
-
-              <small>
-
-                {loading
-                  ? "Please wait..."
-                  : "Continue with this account"}
-
-              </small>
-
-            </div>
-
-            <div className="continue-icon">
-              →
-            </div>
-
-          </button>
-
-          <button
-            type="button"
-            className="other-account-btn"
-
-            onClick={
-              useAnotherAccount
-            }
-
-            disabled={loading}
-          >
-
-            <span className="other-account-icon">
-              +
-            </span>
-
-            <span>
-              Sign in with another account
-            </span>
-
-          </button>
-
-          <div className="selector-security">
-          </div>
-
-        </div>
-
-      </div>
-    );
-  }
-
-  // ============================================================
-  // MAIN LOGIN / SIGNUP
-  // ============================================================
-
+// ==================================================
+// AUTH LAYOUT
+// ==================================================
+
+function AuthLayout({
+  children,
+  title,
+  subtitle
+}) {
   return (
     <div className="auth-page">
 
-      <div className="auth-container">
+      <div className="auth-brand">
 
-        <div className="auth-brand">
-
-          <div className="brand-icon">
-            U
-          </div>
-
-          <h1>
-            UserAuth
-          </h1>
-
-          <p>
-            Secure authentication
-          </p>
-
+        <div className="brand-logo">
+          U
         </div>
 
-        <div className="auth-card">
+        <h1>
+          UserAuth
+        </h1>
 
-          <h2>
+      </div>
 
-            {
-              requiresTwoFactor
-                ? "Two-factor verification"
-                : mode === "signup"
-                  ? "Create account"
-                  : "Sign in"
-            }
+      <div className="auth-card">
 
-          </h2>
+        <h2>
+          {title}
+        </h2>
 
-          <p className="description">
+        <p className="subtitle">
+          {subtitle}
+        </p>
 
-            {
-              requiresTwoFactor
-                ? "Enter your 4-digit security PIN"
-                : "Continue securely with UserAuth"
-            }
-
-          </p>
-
-          {error && (
-            <div className="error">
-              {error}
-            </div>
-          )}
-
-          <form onSubmit={submit}>
-
-            {!requiresTwoFactor && (
-              <>
-
-                {mode === "signup" && (
-                  <div className="field">
-
-                    <label>
-                      Name
-                    </label>
-
-                    <input
-                      type="text"
-                      placeholder="Your name"
-
-                      value={name}
-
-                      onChange={(e) =>
-                        setName(
-                          e.target.value
-                        )
-                      }
-
-                      autoComplete="name"
-
-                      required
-                    />
-
-                  </div>
-                )}
-
-                <div className="field">
-
-                  <label>
-                    U-Mail address
-                  </label>
-
-                  <input
-                    type="email"
-
-                    placeholder="you@umail.com"
-
-                    value={email}
-
-                    onChange={(e) =>
-                      setEmail(
-                        e.target.value.toLowerCase()
-                      )
-                    }
-
-                    autoComplete="email"
-
-                    required
-                  />
-
-                </div>
-
-                <div className="field">
-
-                  <label>
-                    Password
-                  </label>
-
-                  <div className="password-wrapper">
-
-                    <input
-                      type={
-                        showPassword
-                          ? "text"
-                          : "password"
-                      }
-
-                      placeholder="••••••••"
-
-                      value={password}
-
-                      onChange={(e) =>
-                        setPassword(
-                          e.target.value
-                        )
-                      }
-
-                      minLength={6}
-
-                      autoComplete={
-                        mode === "login"
-                          ? "current-password"
-                          : "new-password"
-                      }
-
-                      required
-                    />
-
-                    <button
-                      type="button"
-                      className="show-password"
-
-                      onClick={() =>
-                        setShowPassword(
-                          !showPassword
-                        )
-                      }
-                    >
-                      {
-                        showPassword
-                          ? "Hide"
-                          : "Show"
-                      }
-                    </button>
-
-                  </div>
-
-                </div>
-
-              </>
-            )}
-
-            {requiresTwoFactor && (
-
-              <div className="field">
-
-                <label>
-                  4-digit 2FA PIN
-                </label>
-
-                <div className="password-wrapper">
-
-                  <input
-                    type={
-                      showPin
-                        ? "text"
-                        : "password"
-                    }
-
-                    inputMode="numeric"
-
-                    maxLength={4}
-
-                    placeholder="0000"
-
-                    value={twoFactorPin}
-
-                    onChange={(e) =>
-                      setTwoFactorPin(
-                        e.target.value
-                          .replace(/\D/g, "")
-                          .slice(0, 4)
-                      )
-                    }
-
-                    autoFocus
-
-                    required
-                  />
-
-                  <button
-                    type="button"
-                    className="show-password"
-
-                    onClick={() =>
-                      setShowPin(
-                        !showPin
-                      )
-                    }
-                  >
-                    {
-                      showPin
-                        ? "Hide"
-                        : "Show"
-                    }
-                  </button>
-
-                </div>
-
-                <small className="email-hint">
-                  Enter the 4-digit PIN
-                  configured in UserAuth.
-                </small>
-
-              </div>
-            )}
-
-            <button
-              type="submit"
-              className="submit-button"
-
-              disabled={loading}
-            >
-
-              {
-                loading
-                  ? "Please wait..."
-                  : requiresTwoFactor
-                    ? "Verify PIN"
-                    : mode === "login"
-                      ? "Sign in"
-                      : "Create account"
-              }
-
-            </button>
-
-            {requiresTwoFactor && (
-
-              <button
-                type="button"
-                className="back-button"
-
-                onClick={() => {
-
-                  if (loading) return;
-
-                  setRequiresTwoFactor(false);
-
-                  setTwoFactorPin("");
-
-                  setShowPin(false);
-
-                  setError("");
-
-                }}
-
-                disabled={loading}
-              >
-                ← Back to login
-              </button>
-
-            )}
-
-          </form>
-
-          {!requiresTwoFactor && (
-
-            <div className="switch-mode">
-
-              {
-                mode === "login"
-                  ? "Don't have an account?"
-                  : "Already have an account?"
-              }
-
-              <button
-                type="button"
-
-                onClick={() => {
-
-                  if (loading) return;
-
-                  setMode(
-                    mode === "login"
-                      ? "signup"
-                      : "login"
-                  );
-
-                  setError("");
-
-                  setMessage("");
-
-                  setPassword("");
-
-                  setName("");
-
-                  setRequiresTwoFactor(
-                    false
-                  );
-
-                  setTwoFactorPin("");
-
-                }}
-              >
-                {
-                  mode === "login"
-                    ? "Create account"
-                    : "Sign in"
-                }
-              </button>
-
-            </div>
-
-          )}
-
-        </div>
-
-        <div className="footer">
-          Secured by UserAuth
-        </div>
+        {children}
 
       </div>
 
@@ -1236,4 +64,2433 @@ function App() {
   );
 }
 
-export default App;
+// ==================================================
+// ACCOUNT DATA PRELOAD
+// ==================================================
+
+async function preloadAccountData(user) {
+  if (!user?.id) {
+    return;
+  }
+
+  /*
+    Fetch everything required by the dashboard
+    at the same time.
+
+    Promise.all prevents unnecessary waterfalls.
+  */
+
+  await Promise.allSettled([
+    developer_api.get("/projects")
+  ]);
+}
+
+// ==================================================
+// LOGIN
+// ==================================================
+
+function Login({
+  onLogin,
+  goSignup
+}) {
+  const [email, setEmail] =
+    useState("");
+
+  const [password, setPassword] =
+    useState("");
+
+  const [twoFactorPin, setTwoFactorPin] =
+    useState("");
+
+  const [requiresTwoFactor, setRequiresTwoFactor] =
+    useState(false);
+
+  const [showPassword, setShowPassword] =
+    useState(false);
+
+  const [showPin, setShowPin] =
+    useState(false);
+
+  const [error, setError] =
+    useState("");
+
+  const [loading, setLoading] =
+    useState(false);
+
+
+  const submit = useCallback(
+    async (e) => {
+      e.preventDefault();
+
+      if (loading) {
+        return;
+      }
+
+      setError("");
+
+      const cleanEmail =
+        email.trim().toLowerCase();
+
+
+      if (!isUmail(cleanEmail)) {
+
+        setError(
+          "Only @umail.com email addresses are allowed."
+        );
+
+        return;
+      }
+
+
+      if (
+        requiresTwoFactor &&
+        !/^\d{4}$/.test(
+          twoFactorPin
+        )
+      ) {
+
+        setError(
+          "Enter your 4-digit 2FA PIN."
+        );
+
+        return;
+      }
+
+
+      setLoading(true);
+
+
+      try {
+
+        // ==========================================
+        // LOGIN / 2FA
+        // ==========================================
+
+        const data =
+          await api(
+            "/auth/signin",
+            {
+              method: "POST",
+
+              body: JSON.stringify({
+
+                email:
+                  cleanEmail,
+
+                password,
+
+                ...(requiresTwoFactor
+                  ? {
+                      twoFactorPin
+                    }
+                  : {})
+
+              })
+            }
+          );
+
+
+        // ==========================================
+        // FIRST STEP OF LOGIN
+        // ==========================================
+
+        if (
+          data.requiresTwoFactor
+        ) {
+
+          setRequiresTwoFactor(
+            true
+          );
+
+          setTwoFactorPin("");
+
+          setError("");
+
+          /*
+            Do not remove loading here until
+            the request is completely finished.
+          */
+
+          return;
+        }
+
+
+        // ==========================================
+        // LOGIN COMPLETE
+        // ==========================================
+
+        if (!data.token) {
+
+          throw new Error(
+            "Login token was not returned."
+          );
+
+        }
+
+
+        localStorage.setItem(
+          "accessToken",
+          data.token
+        );
+
+        localStorage.setItem(
+          "user",
+          JSON.stringify(
+            data.user
+          )
+        );
+
+
+        // ==========================================
+        // PRELOAD ACCOUNT DATA
+        // ==========================================
+
+        await preloadAccountData(
+          data.user
+        );
+
+
+        /*
+          Only after authentication AND
+          account data loading is complete,
+          enter the dashboard.
+        */
+
+        onLogin(
+          data.user
+        );
+
+      } catch (error) {
+
+        setError(
+          error.message ||
+          "Login failed"
+        );
+
+      } finally {
+
+        setLoading(false);
+
+      }
+
+    },
+    [
+      email,
+      password,
+      twoFactorPin,
+      requiresTwoFactor,
+      loading,
+      onLogin
+    ]
+  );
+
+
+  const togglePassword =
+    useCallback(() => {
+
+      setShowPassword(
+        value => !value
+      );
+
+    }, []);
+
+
+  const togglePin =
+    useCallback(() => {
+
+      setShowPin(
+        value => !value
+      );
+
+    }, []);
+
+
+  const backToLogin =
+    useCallback(() => {
+
+      if (loading) {
+        return;
+      }
+
+      setRequiresTwoFactor(
+        false
+      );
+
+      setTwoFactorPin("");
+
+      setShowPin(false);
+
+      setError("");
+
+    }, [loading]);
+
+
+  return (
+
+    <AuthLayout
+      title={
+        requiresTwoFactor
+          ? "Two-factor verification"
+          : "Sign in"
+      }
+
+      subtitle={
+        requiresTwoFactor
+          ? "Enter your 4-digit security PIN"
+          : "Continue securely with UserAuth"
+      }
+    >
+
+      <form onSubmit={submit}>
+
+        {error && (
+
+          <div className="alert error">
+
+            <span>
+              {error}
+            </span>
+
+          </div>
+
+        )}
+
+
+        {!requiresTwoFactor && (
+
+          <>
+
+            <label>
+              U-Mail address
+            </label>
+
+            <input
+              type="email"
+              placeholder="you@umail.com"
+              value={email}
+              onChange={(e) =>
+                setEmail(
+                  e.target.value.toLowerCase()
+                )
+              }
+              pattern="^[a-zA-Z0-9._%+-]+@umail\.com$"
+              title="Only @umail.com email addresses are allowed"
+              autoComplete="email"
+              disabled={loading}
+              required
+            />
+
+
+            <label>
+              Password
+            </label>
+
+            <div className="password-input">
+
+              <input
+                type={
+                  showPassword
+                    ? "text"
+                    : "password"
+                }
+
+                placeholder="Enter your password"
+
+                value={password}
+
+                onChange={(e) =>
+                  setPassword(
+                    e.target.value
+                  )
+                }
+
+                autoComplete="current-password"
+
+                disabled={loading}
+
+                required
+              />
+
+
+              <button
+                type="button"
+                className="password-toggle"
+                onClick={togglePassword}
+                disabled={loading}
+              >
+                {showPassword
+                  ? "Hide"
+                  : "Show"}
+              </button>
+
+            </div>
+
+          </>
+
+        )}
+
+
+        {requiresTwoFactor && (
+
+          <>
+
+            <label>
+              4-digit 2FA PIN
+            </label>
+
+            <div className="password-input">
+
+              <input
+                type={
+                  showPin
+                    ? "text"
+                    : "password"
+                }
+
+                inputMode="numeric"
+
+                maxLength={4}
+
+                pattern="\d{4}"
+
+                placeholder="0000"
+
+                value={twoFactorPin}
+
+                onChange={(e) =>
+                  setTwoFactorPin(
+                    e.target.value
+                      .replace(/\D/g, "")
+                      .slice(0, 4)
+                  )
+                }
+
+                autoFocus
+
+                autoComplete="one-time-code"
+
+                disabled={loading}
+
+                required
+              />
+
+
+              <button
+                type="button"
+                className="password-toggle"
+                onClick={togglePin}
+                disabled={loading}
+              >
+                {showPin
+                  ? "Hide"
+                  : "Show"}
+              </button>
+
+            </div>
+
+          </>
+
+        )}
+
+
+        <button
+          type="submit"
+          className="primary full"
+          disabled={loading}
+        >
+
+          {loading
+            ? requiresTwoFactor
+              ? "Verifying..."
+              : "Signing in..."
+            : requiresTwoFactor
+              ? "Verify PIN"
+              : "Sign in"}
+
+        </button>
+
+
+        {requiresTwoFactor && (
+
+          <button
+            type="button"
+            className="secondary full"
+            disabled={loading}
+            onClick={backToLogin}
+          >
+            Back to login
+          </button>
+
+        )}
+
+      </form>
+
+
+      {!requiresTwoFactor && (
+
+        <p className="switch-text">
+
+          Don't have an account?{" "}
+
+          <button
+            type="button"
+            onClick={goSignup}
+            disabled={loading}
+          >
+            Create account
+          </button>
+
+        </p>
+
+      )}
+
+    </AuthLayout>
+
+  );
+}
+
+// ==================================================
+// SIGNUP
+// ==================================================
+
+function Signup({
+  onLogin,
+  goLogin
+}) {
+  const [name, setName] =
+    useState("");
+
+  const [email, setEmail] =
+    useState("");
+
+  const [password, setPassword] =
+    useState("");
+
+  const [showPassword, setShowPassword] =
+    useState(false);
+
+  const [error, setError] =
+    useState("");
+
+  const [loading, setLoading] =
+    useState(false);
+
+
+  const submit = useCallback(
+    async (e) => {
+
+      e.preventDefault();
+
+      if (loading) {
+        return;
+      }
+
+      setError("");
+
+
+      const cleanName =
+        name.trim();
+
+      const cleanEmail =
+        email.trim().toLowerCase();
+
+
+      if (!isUmail(cleanEmail)) {
+
+        setError(
+          "Only @umail.com email addresses are allowed."
+        );
+
+        return;
+      }
+
+
+      if (
+        password.length < 6
+      ) {
+
+        setError(
+          "Password must be at least 6 characters."
+        );
+
+        return;
+      }
+
+
+      setLoading(true);
+
+
+      try {
+
+        const data =
+          await api(
+            "/auth/signup",
+            {
+              method: "POST",
+
+              body: JSON.stringify({
+
+                name:
+                  cleanName,
+
+                email:
+                  cleanEmail,
+
+                password
+
+              })
+            }
+          );
+
+
+        if (!data.token) {
+
+          throw new Error(
+            "Signup token was not returned."
+          );
+
+        }
+
+
+        localStorage.setItem(
+          "accessToken",
+          data.token
+        );
+
+        localStorage.setItem(
+          "user",
+          JSON.stringify(
+            data.user
+          )
+        );
+
+
+        // Preload data before dashboard
+        await preloadAccountData(
+          data.user
+        );
+
+
+        onLogin(
+          data.user
+        );
+
+      } catch (error) {
+
+        setError(
+          error.message ||
+          "Account creation failed"
+        );
+
+      } finally {
+
+        setLoading(false);
+
+      }
+
+    },
+    [
+      name,
+      email,
+      password,
+      loading,
+      onLogin
+    ]
+  );
+
+
+  const togglePassword =
+    useCallback(() => {
+
+      setShowPassword(
+        value => !value
+      );
+
+    }, []);
+
+
+  return (
+
+    <AuthLayout
+      title="Create account"
+      subtitle="Create your secure UserAuth account"
+    >
+
+      <form onSubmit={submit}>
+
+        {error && (
+
+          <div className="alert error">
+            {error}
+          </div>
+
+        )}
+
+
+        <label>
+          Full name
+        </label>
+
+        <input
+          type="text"
+          placeholder="Your name"
+          value={name}
+          onChange={(e) =>
+            setName(
+              e.target.value
+            )
+          }
+          autoComplete="name"
+          disabled={loading}
+          required
+        />
+
+
+        <label>
+          U-Mail address
+        </label>
+
+        <input
+          type="email"
+          placeholder="you@umail.com"
+          value={email}
+          onChange={(e) =>
+            setEmail(
+              e.target.value.toLowerCase()
+            )
+          }
+          pattern="^[a-zA-Z0-9._%+-]+@umail\.com$"
+          title="Only @umail.com email addresses are allowed"
+          autoComplete="email"
+          disabled={loading}
+          required
+        />
+
+
+        <small className="mail-hint">
+          Your email must end with @umail.com
+        </small>
+
+
+        <label>
+          Password
+        </label>
+
+        <div className="password-input">
+
+          <input
+            type={
+              showPassword
+                ? "text"
+                : "password"
+            }
+            placeholder="Minimum 6 characters"
+            minLength={6}
+            value={password}
+            onChange={(e) =>
+              setPassword(
+                e.target.value
+              )
+            }
+            autoComplete="new-password"
+            disabled={loading}
+            required
+          />
+
+
+          <button
+            type="button"
+            className="password-toggle"
+            onClick={togglePassword}
+            disabled={loading}
+          >
+            {showPassword
+              ? "Hide"
+              : "Show"}
+          </button>
+
+        </div>
+
+
+        <button
+          type="submit"
+          className="primary full"
+          disabled={loading}
+        >
+
+          {loading
+            ? "Creating account..."
+            : "Create account"}
+
+        </button>
+
+      </form>
+
+
+      <p className="switch-text">
+
+        Already have an account?{" "}
+
+        <button
+          type="button"
+          onClick={goLogin}
+          disabled={loading}
+        >
+          Sign in
+        </button>
+
+      </p>
+
+    </AuthLayout>
+
+  );
+}
+
+// ==================================================
+// PROFILE
+// ==================================================
+
+function Profile({
+  user,
+  updateUser,
+  setMessage
+}) {
+  const [projects, setProjects] =
+    useState([]);
+
+  const [projectsLoading, setProjectsLoading] =
+    useState(false);
+
+  const [projectsError, setProjectsError] =
+    useState("");
+
+
+  const loadProjects =
+    useCallback(
+      async () => {
+
+        if (!user?.id) {
+          return;
+        }
+
+        try {
+
+          setProjectsLoading(
+            true
+          );
+
+          setProjectsError("");
+
+
+          const response =
+            await developer_api.get(
+              "/projects"
+            );
+
+
+          setProjects(
+            response.data.projects ||
+            []
+          );
+
+        } catch (error) {
+
+          console.error(
+            "Projects error:",
+            error
+          );
+
+
+          setProjectsError(
+            error.response?.data?.message ||
+            error.message ||
+            "Unable to load projects"
+          );
+
+        } finally {
+
+          setProjectsLoading(
+            false
+          );
+
+        }
+
+      },
+      [user?.id]
+    );
+
+
+  useEffect(() => {
+
+    loadProjects();
+
+  }, [loadProjects]);
+
+
+  const updateProfile =
+    useCallback(
+      async (e) => {
+
+        e.preventDefault();
+
+        const form =
+          e.currentTarget;
+
+
+        try {
+
+          const data =
+            await api(
+              "/auth/profile",
+              {
+                method: "PUT",
+
+                body: JSON.stringify({
+
+                  name:
+                    form.name.value,
+
+                  phone:
+                    form.phone.value,
+
+                  address:
+                    form.address.value
+
+                })
+              }
+            );
+
+
+          updateUser(
+            data.user
+          );
+
+
+          setMessage(
+            "Profile updated successfully"
+          );
+
+        } catch (error) {
+
+          setMessage(
+            error.message ||
+            "Failed to update profile"
+          );
+
+        }
+
+      },
+      [
+        updateUser,
+        setMessage
+      ]
+    );
+
+
+  return (
+    <>
+      <div className="page-title">
+
+        <h1>
+          Personal information
+        </h1>
+
+        <p>
+          Manage your personal details
+          and account information.
+        </p>
+
+      </div>
+
+
+      <section className="card profile-summary">
+
+        <div className="avatar profile-avatar">
+
+          {user?.name?.[0]
+            ?.toUpperCase() || "U"}
+
+        </div>
+
+
+        <div>
+
+          <h2>
+            {user?.name}
+          </h2>
+
+          <p>
+            {user?.email}
+          </p>
+
+        </div>
+
+      </section>
+
+
+      <section className="card">
+
+        <h2>
+          Basic information
+        </h2>
+
+
+        <form
+          onSubmit={updateProfile}
+        >
+
+          <label>
+            Full name
+          </label>
+
+          <input
+            name="name"
+            defaultValue={
+              user?.name || ""
+            }
+            required
+          />
+
+
+          <label>
+            U-Mail address
+          </label>
+
+          <input
+            value={
+              user?.email || ""
+            }
+            disabled
+            readOnly
+          />
+
+
+          <label>
+            Phone number
+          </label>
+
+          <input
+            name="phone"
+            type="tel"
+            placeholder="+91 98765 43210"
+            defaultValue={
+              user?.phone || ""
+            }
+          />
+
+
+          <label>
+            Home address
+          </label>
+
+          <textarea
+            name="address"
+            rows={4}
+            placeholder="Enter your home address"
+            defaultValue={
+              user?.address || ""
+            }
+          />
+
+
+          <button
+            type="submit"
+            className="primary"
+          >
+            Save changes
+          </button>
+
+        </form>
+
+      </section>
+
+
+      <section className="card">
+
+        <h2>
+          Account password
+        </h2>
+
+
+        <div className="password-display">
+
+          <input
+            type="text"
+            value="••••••••••••"
+            readOnly
+          />
+
+
+          <NavLink
+            to="/security"
+            className="console-btn"
+          >
+            Change
+          </NavLink>
+
+        </div>
+
+      </section>
+
+
+      <section className="card">
+
+        <div className="section-heading">
+
+          <div>
+
+            <h2>
+              Developer Console Projects
+            </h2>
+
+            <p className="muted">
+              Projects created from your
+              Developer Console account.
+            </p>
+
+          </div>
+
+
+          <button
+            type="button"
+            className="console-btn"
+            onClick={loadProjects}
+            disabled={projectsLoading}
+          >
+            {projectsLoading
+              ? "Loading..."
+              : "Refresh"}
+          </button>
+
+        </div>
+
+
+        {projectsLoading && (
+
+          <p className="muted">
+            Loading projects...
+          </p>
+
+        )}
+
+
+        {projectsError && (
+
+          <div className="alert error">
+            {projectsError}
+          </div>
+
+        )}
+
+
+        {!projectsLoading &&
+          !projectsError &&
+          projects.length === 0 && (
+
+            <div className="project-empty">
+
+              <p>
+                No Developer Console projects found.
+              </p>
+
+
+              <a
+                href="https://developer-uauth.wuaze.com/"
+                className="console-btn"
+              >
+                Open Developer Console
+              </a>
+
+            </div>
+
+          )}
+
+
+        {!projectsLoading &&
+          projects.length > 0 && (
+
+            <div className="project-list">
+
+              {projects.map(
+                project => (
+
+                  <div
+                    key={project._id}
+                    className="project-account-row"
+                  >
+
+                    <div className="project-account-info">
+
+                      <strong>
+                        {project.name}
+                      </strong>
+
+
+                      <small>
+                        Project ID:{" "}
+                        {project._id}
+                      </small>
+
+
+                      <small>
+                        Publishable Key:{" "}
+                        {project.publishableKey}
+                      </small>
+
+                    </div>
+
+
+                    <button
+                      type="button"
+                      className="console-btn"
+                      onClick={() => {
+
+                        window.location.href =
+                          `https://developer-uauth.wuaze.com/?project=${project._id}`;
+
+                      }}
+                    >
+                      Edit
+                    </button>
+
+                  </div>
+
+                )
+              )}
+
+            </div>
+
+          )}
+
+      </section>
+    </>
+  );
+}
+
+// ==================================================
+// SECURITY
+// ==================================================
+
+function Security({
+  setMessage
+}) {
+  const [saving, setSaving] =
+    useState(false);
+
+  const [showCurrentPassword, setShowCurrentPassword] =
+    useState(false);
+
+  const [showNewPassword, setShowNewPassword] =
+    useState(false);
+
+
+  const changePassword =
+    useCallback(
+      async (e) => {
+
+        e.preventDefault();
+
+        if (saving) {
+          return;
+        }
+
+
+        const form =
+          e.currentTarget;
+
+
+        const currentPassword =
+          form.currentPassword.value;
+
+        const newPassword =
+          form.newPassword.value;
+
+
+        if (
+          newPassword.length < 6
+        ) {
+
+          setMessage(
+            "New password must be at least 6 characters."
+          );
+
+          return;
+        }
+
+
+        if (
+          currentPassword ===
+          newPassword
+        ) {
+
+          setMessage(
+            "New password must be different from the current password."
+          );
+
+          return;
+        }
+
+
+        try {
+
+          setSaving(true);
+
+
+          const data =
+            await api(
+              "/auth/password",
+              {
+                method: "PUT",
+
+                body: JSON.stringify({
+
+                  currentPassword,
+                  newPassword
+
+                })
+              }
+            );
+
+
+          form.reset();
+
+          setShowCurrentPassword(
+            false
+          );
+
+          setShowNewPassword(
+            false
+          );
+
+
+          setMessage(
+            data.message ||
+            "Password updated successfully"
+          );
+
+        } catch (error) {
+
+          setMessage(
+            error.message ||
+            "Failed to update password"
+          );
+
+        } finally {
+
+          setSaving(false);
+
+        }
+
+      },
+      [
+        saving,
+        setMessage
+      ]
+    );
+
+
+  const toggleCurrentPassword =
+    useCallback(() => {
+
+      setShowCurrentPassword(
+        value => !value
+      );
+
+    }, []);
+
+
+  const toggleNewPassword =
+    useCallback(() => {
+
+      setShowNewPassword(
+        value => !value
+      );
+
+    }, []);
+
+
+  return (
+    <>
+      <div className="page-title">
+
+        <h1>
+          Security
+        </h1>
+
+        <p>
+          Manage your password and
+          account security.
+        </p>
+
+      </div>
+
+
+      <section className="card">
+
+        <h2>
+          Change password
+        </h2>
+
+
+        <form
+          onSubmit={changePassword}
+        >
+
+          <label>
+            Current password
+          </label>
+
+
+          <div className="password-input">
+
+            <input
+              name="currentPassword"
+              type={
+                showCurrentPassword
+                  ? "text"
+                  : "password"
+              }
+              placeholder="Enter current password"
+              autoComplete="current-password"
+              disabled={saving}
+              required
+            />
+
+
+            <button
+              type="button"
+              className="password-toggle"
+              onClick={
+                toggleCurrentPassword
+              }
+              disabled={saving}
+            >
+              {showCurrentPassword
+                ? "Hide"
+                : "Show"}
+            </button>
+
+          </div>
+
+
+          <label>
+            New password
+          </label>
+
+
+          <div className="password-input">
+
+            <input
+              name="newPassword"
+              type={
+                showNewPassword
+                  ? "text"
+                  : "password"
+              }
+              placeholder="Enter new password"
+              autoComplete="new-password"
+              minLength={6}
+              disabled={saving}
+              required
+            />
+
+
+            <button
+              type="button"
+              className="password-toggle"
+              onClick={
+                toggleNewPassword
+              }
+              disabled={saving}
+            >
+              {showNewPassword
+                ? "Hide"
+                : "Show"}
+            </button>
+
+          </div>
+
+
+          <button
+            type="submit"
+            className="primary"
+            disabled={saving}
+          >
+            {saving
+              ? "Updating..."
+              : "Change password"}
+          </button>
+
+        </form>
+
+      </section>
+    </>
+  );
+}
+
+// ==================================================
+// PRIVACY
+// ==================================================
+
+function Privacy({
+  user,
+  updateUser,
+  setMessage
+}) {
+  const [showModal, setShowModal] =
+    useState(false);
+
+  const [pin, setPin] =
+    useState("");
+
+  const [showPin, setShowPin] =
+    useState(false);
+
+  const [loading, setLoading] =
+    useState(false);
+
+  const [error, setError] =
+    useState("");
+
+
+  const enabled =
+    Boolean(
+      user?.twoFactorEnabled
+    );
+
+
+  const toggle2FA =
+    useCallback(
+      async () => {
+
+        if (loading) {
+          return;
+        }
+
+        setError("");
+
+
+        if (enabled) {
+
+          try {
+
+            setLoading(true);
+
+
+            const data =
+              await api(
+                "/auth/2fa/disable",
+                {
+                  method: "PUT"
+                }
+              );
+
+
+            updateUser({
+
+              ...user,
+
+              twoFactorEnabled:
+                false
+
+            });
+
+
+            setMessage(
+              data.message ||
+              "Two-factor authentication disabled"
+            );
+
+          } catch (error) {
+
+            setError(
+              error.message ||
+              "Unable to disable 2FA"
+            );
+
+          } finally {
+
+            setLoading(false);
+
+          }
+
+          return;
+        }
+
+
+        setPin("");
+
+        setShowPin(false);
+
+        setError("");
+
+        setShowModal(true);
+
+      },
+      [
+        loading,
+        enabled,
+        user,
+        updateUser,
+        setMessage
+      ]
+    );
+
+
+  const enable2FA =
+    useCallback(
+      async () => {
+
+        if (loading) {
+          return;
+        }
+
+
+        if (
+          !/^\d{4}$/.test(pin)
+        ) {
+
+          setError(
+            "PIN must be exactly 4 digits."
+          );
+
+          return;
+        }
+
+
+        try {
+
+          setLoading(true);
+
+          setError("");
+
+
+          const data =
+            await api(
+              "/auth/2fa/enable",
+              {
+                method: "PUT",
+
+                body: JSON.stringify({
+                  pin
+                })
+              }
+            );
+
+
+          updateUser({
+
+            ...user,
+
+            twoFactorEnabled:
+              true
+
+          });
+
+
+          setShowModal(false);
+
+          setPin("");
+
+          setShowPin(false);
+
+
+          setMessage(
+            data.message ||
+            "Two-factor authentication enabled"
+          );
+
+        } catch (error) {
+
+          setError(
+            error.message ||
+            "Unable to enable 2FA"
+          );
+
+        } finally {
+
+          setLoading(false);
+
+        }
+
+      },
+      [
+        loading,
+        pin,
+        user,
+        updateUser,
+        setMessage
+      ]
+    );
+
+
+  const togglePin =
+    useCallback(() => {
+
+      setShowPin(
+        value => !value
+      );
+
+    }, []);
+
+
+  const closeModal =
+    useCallback(() => {
+
+      if (!loading) {
+        setShowModal(false);
+      }
+
+    }, [loading]);
+
+
+  return (
+    <>
+      <div className="page-title">
+
+        <h1>
+          Privacy
+        </h1>
+
+        <p>
+          Manage privacy and account
+          security settings.
+        </p>
+
+      </div>
+
+
+      <section className="card">
+
+        <h2>
+          Two-factor authentication
+        </h2>
+
+
+        <p className="muted">
+
+          After enabling 2FA, your 4-digit
+          PIN will be requested after your
+          password during login.
+
+        </p>
+
+
+        <div className="setting-row">
+
+          <div>
+
+            <strong>
+              Two-factor protection
+            </strong>
+
+            <small>
+              {enabled
+                ? "Enabled"
+                : "Disabled"}
+            </small>
+
+          </div>
+
+
+          <button
+            type="button"
+            className={
+              enabled
+                ? "toggle on"
+                : "toggle"
+            }
+            onClick={toggle2FA}
+            disabled={loading}
+          >
+            <span />
+          </button>
+
+        </div>
+
+      </section>
+
+
+      {showModal && (
+
+        <div
+          className="modal-backdrop"
+          onMouseDown={(e) => {
+
+            if (
+              e.target ===
+              e.currentTarget &&
+              !loading
+            ) {
+
+              setShowModal(false);
+
+            }
+
+          }}
+        >
+
+          <div className="twofa-modal">
+
+            <button
+              type="button"
+              className="modal-close"
+              onClick={closeModal}
+            >
+              ×
+            </button>
+
+
+            <h2>
+              Enable 2FA
+            </h2>
+
+
+            <p className="muted">
+
+              Create a 4-digit PIN that
+              will be required after your
+              password during login.
+
+            </p>
+
+
+            {error && (
+
+              <div className="alert error">
+
+                <span>
+                  {error}
+                </span>
+
+              </div>
+
+            )}
+
+
+            <label>
+              4-digit PIN
+            </label>
+
+
+            <div className="password-input">
+
+              <input
+                type={
+                  showPin
+                    ? "text"
+                    : "password"
+                }
+                inputMode="numeric"
+                maxLength={4}
+                pattern="\d{4}"
+                placeholder="0000"
+                value={pin}
+                onChange={(e) =>
+                  setPin(
+                    e.target.value
+                      .replace(/\D/g, "")
+                      .slice(0, 4)
+                  )
+                }
+                autoFocus
+                disabled={loading}
+              />
+
+
+              <button
+                type="button"
+                className="password-toggle"
+                onClick={togglePin}
+                disabled={loading}
+              >
+                {showPin
+                  ? "Hide"
+                  : "Show"}
+              </button>
+
+            </div>
+
+
+            <button
+              type="button"
+              className="primary full"
+              onClick={enable2FA}
+              disabled={
+                loading ||
+                pin.length !== 4
+              }
+            >
+
+              {loading
+                ? "Enabling..."
+                : "Enable 2FA"}
+
+            </button>
+
+          </div>
+
+        </div>
+
+      )}
+    </>
+  );
+}
+
+// ==================================================
+// DASHBOARD
+// ==================================================
+
+function Dashboard({
+  user,
+  onLogout,
+  updateUser
+}) {
+  const [message, setMessage] =
+    useState("");
+
+
+  const clearMessage =
+    useCallback(() => {
+
+      setMessage("");
+
+    }, []);
+
+
+  return (
+    <div className="dashboard">
+
+      <header className="topbar">
+
+        <div className="top-brand">
+
+          <div className="mini-logo">
+            U
+          </div>
+
+          <strong>
+            UserAuth
+          </strong>
+
+          <span>
+            Account
+          </span>
+
+        </div>
+
+
+        <div className="top-user">
+
+          <NavLink
+            to="/mail"
+            className="console-btn"
+          >
+            U-Mail
+          </NavLink>
+
+
+          <a
+            href="https://developer-uauth.wuaze.com/"
+            className="console-btn"
+          >
+            Developer Console
+          </a>
+
+
+          <div className="avatar">
+
+            {user?.name?.[0]
+              ?.toUpperCase() || "U"}
+
+          </div>
+
+        </div>
+
+      </header>
+
+
+      <div className="dashboard-layout">
+
+        <aside className="sidebar">
+
+          <div className="user-box">
+
+            <div className="avatar large">
+
+              {user?.name?.[0]
+                ?.toUpperCase() || "U"}
+
+            </div>
+
+
+            <strong>
+              {user?.name}
+            </strong>
+
+
+            <small>
+              {user?.email}
+            </small>
+
+          </div>
+
+
+          <NavLink
+            to="/"
+            end
+            className={({ isActive }) =>
+              isActive
+                ? "nav active"
+                : "nav"
+            }
+          >
+            Personal information
+          </NavLink>
+
+
+          <NavLink
+            to="/security"
+            className={({ isActive }) =>
+              isActive
+                ? "nav active"
+                : "nav"
+            }
+          >
+            Security
+          </NavLink>
+
+
+          <NavLink
+            to="/privacy"
+            className={({ isActive }) =>
+              isActive
+                ? "nav active"
+                : "nav"
+            }
+          >
+            Privacy
+          </NavLink>
+
+
+          <NavLink
+            to="/mail"
+            className={({ isActive }) =>
+              isActive
+                ? "nav active"
+                : "nav"
+            }
+          >
+            U-Mail
+          </NavLink>
+
+
+          <button
+            type="button"
+            className="nav logout"
+            onClick={onLogout}
+          >
+            Sign out
+          </button>
+
+        </aside>
+
+
+        <main className="content">
+
+          {message && (
+
+            <div className="alert success">
+
+              <span>
+                {message}
+              </span>
+
+
+              <button
+                type="button"
+                onClick={clearMessage}
+              >
+                ×
+              </button>
+
+            </div>
+
+          )}
+
+
+          <Routes>
+
+            <Route
+              path="/"
+              element={
+                <Profile
+                  user={user}
+                  updateUser={updateUser}
+                  setMessage={setMessage}
+                />
+              }
+            />
+
+
+            <Route
+              path="/security"
+              element={
+                <Security
+                  setMessage={setMessage}
+                />
+              }
+            />
+
+
+            <Route
+              path="/privacy"
+              element={
+                <Privacy
+                  user={user}
+                  updateUser={updateUser}
+                  setMessage={setMessage}
+                />
+              }
+            />
+
+
+            <Route
+              path="/mail"
+              element={
+                <Mail />
+              }
+            />
+
+
+            <Route
+              path="*"
+              element={
+                <Navigate
+                  to="/"
+                  replace
+                />
+              }
+            />
+
+          </Routes>
+
+        </main>
+
+      </div>
+
+    </div>
+  );
+}
+
+// ==================================================
+// FULL ACCOUNT LOADING SCREEN
+// ==================================================
+
+function AccountLoading() {
+  return (
+    <div className="loading">
+
+      <div className="loading-spinner" />
+
+      <span>
+        Loading your account...
+      </span>
+
+    </div>
+  );
+}
+
+// ==================================================
+// APP
+// ==================================================
+
+export default function App() {
+
+  const [screen, setScreen] =
+    useState("login");
+
+  const [user, setUser] =
+    useState(null);
+
+  const [checking, setChecking] =
+    useState(true);
+
+
+  // ==================================================
+  // STARTUP
+  // ==================================================
+
+  useEffect(() => {
+
+    let active = true;
+
+
+    async function restoreSession() {
+
+      const savedUser =
+        localStorage.getItem(
+          "user"
+        );
+
+      const token =
+        localStorage.getItem(
+          "accessToken"
+        );
+
+
+      if (
+        !savedUser ||
+        !token
+      ) {
+
+        if (active) {
+          setChecking(false);
+        }
+
+        return;
+      }
+
+
+      try {
+
+        const parsedUser =
+          JSON.parse(
+            savedUser
+          );
+
+
+        if (!parsedUser) {
+          throw new Error(
+            "Invalid user"
+          );
+        }
+
+
+        /*
+          Keep loading screen visible while
+          all required account data is fetched.
+        */
+
+        await preloadAccountData(
+          parsedUser
+        );
+
+
+        if (!active) {
+          return;
+        }
+
+
+        setUser(
+          parsedUser
+        );
+
+        setScreen(
+          "dashboard"
+        );
+
+      } catch {
+
+        localStorage.removeItem(
+          "user"
+        );
+
+        localStorage.removeItem(
+          "accessToken"
+        );
+
+      } finally {
+
+        if (active) {
+          setChecking(false);
+        }
+
+      }
+
+    }
+
+
+    restoreSession();
+
+
+    return () => {
+
+      active = false;
+
+    };
+
+  }, []);
+
+
+  // ==================================================
+  // LOGIN
+  // ==================================================
+
+  const login =
+    useCallback(
+      (userData) => {
+
+        setUser(
+          userData
+        );
+
+        localStorage.setItem(
+          "user",
+          JSON.stringify(
+            userData
+          )
+        );
+
+        setScreen(
+          "dashboard"
+        );
+
+      },
+      []
+    );
+
+
+  // ==================================================
+  // UPDATE USER
+  // ==================================================
+
+  const updateUser =
+    useCallback(
+      (userData) => {
+
+        setUser(
+          userData
+        );
+
+        localStorage.setItem(
+          "user",
+          JSON.stringify(
+            userData
+          )
+        );
+
+      },
+      []
+    );
+
+
+  // ==================================================
+  // LOGOUT
+  // ==================================================
+
+  const logout =
+    useCallback(
+      () => {
+
+        localStorage.removeItem(
+          "accessToken"
+        );
+
+        localStorage.removeItem(
+          "user"
+        );
+
+        setUser(null);
+
+        setScreen(
+          "login"
+        );
+
+      },
+      []
+    );
+
+
+  // ==================================================
+  // NAVIGATION
+  // ==================================================
+
+  const goSignup =
+    useCallback(() => {
+
+      setScreen(
+        "signup"
+      );
+
+    }, []);
+
+
+  const goLogin =
+    useCallback(() => {
+
+      setScreen(
+        "login"
+      );
+
+    }, []);
+
+
+  // ==================================================
+  // INITIAL ACCOUNT LOADING
+  // ==================================================
+
+  if (checking) {
+
+    return (
+      <AccountLoading />
+    );
+
+  }
+
+
+  // ==================================================
+  // LOGIN
+  // ==================================================
+
+  if (
+    screen === "login"
+  ) {
+
+    return (
+
+      <Login
+        onLogin={login}
+        goSignup={goSignup}
+      />
+
+    );
+
+  }
+
+
+  // ==================================================
+  // SIGNUP
+  // ==================================================
+
+  if (
+    screen === "signup"
+  ) {
+
+    return (
+
+      <Signup
+        onLogin={login}
+        goLogin={goLogin}
+      />
+
+    );
+
+  }
+
+
+  // ==================================================
+  // DASHBOARD
+  // ==================================================
+
+  return (
+
+    <Dashboard
+      user={user}
+      onLogout={logout}
+      updateUser={updateUser}
+    />
+
+  );
+
+}
